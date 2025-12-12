@@ -237,6 +237,10 @@ func ConvertOpenAIToAnthropic(req OpenAIRequest) (*AnthropicRequest, error) {
 
 			if len(anthContents) > 0 {
 				anthMsg.Content = anthContents
+			} else {
+				// 如果没有任何内容（所有 tool_calls 都被跳过），添加占位符避免 Anthropic 错误
+				log.Printf("[WARN] Message has no content after tool_call filtering, adding placeholder")
+				anthMsg.Content = "..."
 			}
 		}
 
