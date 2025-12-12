@@ -323,24 +323,27 @@ func stringPtr(s string) *string {
 // ConvertAnthropicToOpenAI 将 Anthropic 响应转换为 OpenAI 响应
 func ConvertAnthropicToOpenAI(anthResp AnthropicResponse) OpenAIResponse {
 	resp := OpenAIResponse{
-		ID:      anthResp.ID,
-		Object:  "chat.completion",
-		Created: getCurrentTimestamp(),
-		Model:   anthResp.Model,
-		Usage: struct {
-			PromptTokens             int `json:"prompt_tokens"`
-			CompletionTokens         int `json:"completion_tokens"`
-			TotalTokens              int `json:"total_tokens"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-		}{
-			PromptTokens:             anthResp.Usage.InputTokens,
-			CompletionTokens:         anthResp.Usage.OutputTokens,
-			TotalTokens:              anthResp.Usage.InputTokens + anthResp.Usage.OutputTokens,
-			CacheCreationInputTokens: anthResp.Usage.CacheCreationInputTokens,
-			CacheReadInputTokens:     anthResp.Usage.CacheReadInputTokens,
-		},
+		ID:          anthResp.ID,
+		Object:      "chat.completion",
+		Created:     getCurrentTimestamp(),
+		Model:       anthResp.Model,
+		ServiceTier: "default",
 	}
+
+	// 填充 Usage 信息
+	resp.Usage.PromptTokens = anthResp.Usage.InputTokens
+	resp.Usage.CompletionTokens = anthResp.Usage.OutputTokens
+	resp.Usage.TotalTokens = anthResp.Usage.InputTokens + anthResp.Usage.OutputTokens
+
+	// 填充 prompt_tokens_details
+	resp.Usage.PromptTokensDetails.CachedTokens = anthResp.Usage.CacheReadInputTokens
+	resp.Usage.PromptTokensDetails.AudioTokens = 0
+
+	// 填充 completion_tokens_details
+	resp.Usage.CompletionTokensDetails.ReasoningTokens = 0
+	resp.Usage.CompletionTokensDetails.AudioTokens = 0
+	resp.Usage.CompletionTokensDetails.AcceptedPredictionTokens = 0
+	resp.Usage.CompletionTokensDetails.RejectedPredictionTokens = 0
 
 	// 初始化 choices
 	resp.Choices = make([]struct {

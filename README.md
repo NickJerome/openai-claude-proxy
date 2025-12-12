@@ -70,6 +70,7 @@ MODEL_MAPPING=gpt-4:claude-opus-4-5-20251101,gpt-3.5-turbo:claude-3-5-haiku-2024
 
 # 可选：Max Tokens 映射（为每个模型单独设置 max_tokens）
 # 格式: "模型1:tokens1,模型2:tokens2"
+# 注意: 这里使用的是映射后的模型名（即 Anthropic 实际使用的模型名）
 # 优先级: MAX_TOKENS_MAPPING > MAX_TOKENS > 内置默认值
 MAX_TOKENS_MAPPING=claude-opus-4-5-20251101:16384,claude-3-5-sonnet-20241022:8192,claude-3-haiku-20240307:4096
 

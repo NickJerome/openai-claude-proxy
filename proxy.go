@@ -372,11 +372,19 @@ func (h *ProxyHandler) handleStreamResponse(c *gin.Context, httpResp *http.Respo
 
 					if usage != nil {
 						chunk["usage"] = map[string]interface{}{
-							"prompt_tokens":                usage.InputTokens,
-							"completion_tokens":            usage.OutputTokens,
-							"total_tokens":                 usage.InputTokens + usage.OutputTokens,
-							"cache_creation_input_tokens":  usage.CacheCreationInputTokens,
-							"cache_read_input_tokens":      usage.CacheReadInputTokens,
+							"prompt_tokens":     usage.InputTokens,
+							"completion_tokens": usage.OutputTokens,
+							"total_tokens":      usage.InputTokens + usage.OutputTokens,
+							"prompt_tokens_details": map[string]interface{}{
+								"cached_tokens": usage.CacheReadInputTokens,
+								"audio_tokens":  0,
+							},
+							"completion_tokens_details": map[string]interface{}{
+								"reasoning_tokens":            0,
+								"audio_tokens":                0,
+								"accepted_prediction_tokens":  0,
+								"rejected_prediction_tokens":  0,
+							},
 						}
 					}
 
