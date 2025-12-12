@@ -379,6 +379,8 @@ func convertStopReason(reason string) string {
 		return "length"
 	case "stop_sequence":
 		return "stop"
+	case "tool_use":
+		return "tool_calls"
 	default:
 		return reason
 	}

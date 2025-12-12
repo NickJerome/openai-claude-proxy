@@ -183,10 +183,14 @@ func (h *ProxyHandler) handleStreamResponse(c *gin.Context, httpResp *http.Respo
 
 	scanner := bufio.NewScanner(httpResp.Body)
 	var (
-		messageID   string
-		currentText strings.Builder
-		usage       *AnthropicUsage
-		eventCount  int
+		messageID      string
+		currentText    strings.Builder
+		currentTools   []ToolCall
+		currentToolID  string
+		currentToolName string
+		currentToolArgs strings.Builder
+		usage          *AnthropicUsage
+		eventCount     int
 	)
 
 	for scanner.Scan() {
@@ -227,9 +231,24 @@ func (h *ProxyHandler) handleStreamResponse(c *gin.Context, httpResp *http.Respo
 				}
 			}
 
+		case "content_block_start":
+			// 处理工具调用开始
+			if block, ok := event["content_block"].(map[string]interface{}); ok {
+				blockType, _ := block["type"].(string)
+				if blockType == "tool_use" {
+					currentToolID, _ = block["id"].(string)
+					currentToolName, _ = block["name"].(string)
+					currentToolArgs.Reset()
+					log.Printf("[INFO] Tool use started - ID: %s, Name: %s", currentToolID, currentToolName)
+				}
+			}
+
 		case "content_block_delta":
 			if delta, ok := event["delta"].(map[string]interface{}); ok {
-				if deltaType, _ := delta["type"].(string); deltaType == "text_delta" {
+				deltaType, _ := delta["type"].(string)
+
+				if deltaType == "text_delta" {
+					// 处理文本内容
 					if text, ok := delta["text"].(string); ok {
 						currentText.WriteString(text)
 
@@ -252,28 +271,67 @@ func (h *ProxyHandler) handleStreamResponse(c *gin.Context, httpResp *http.Respo
 
 						sendSSE(c, chunk, flusher)
 					}
+				} else if deltaType == "input_json_delta" {
+					// 处理工具参数
+					if partialJSON, ok := delta["partial_json"].(string); ok {
+						currentToolArgs.WriteString(partialJSON)
+					}
 				}
+			}
+
+		case "content_block_stop":
+			// 工具块结束，添加到工具列表
+			if currentToolID != "" {
+				currentTools = append(currentTools, ToolCall{
+					ID:   currentToolID,
+					Type: "function",
+					Function: struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					}{
+						Name:      currentToolName,
+						Arguments: currentToolArgs.String(),
+					},
+				})
+				log.Printf("[INFO] Tool use completed - ID: %s, Name: %s, Args length: %d",
+					currentToolID, currentToolName, currentToolArgs.Len())
+
+				// 重置
+				currentToolID = ""
+				currentToolName = ""
+				currentToolArgs.Reset()
 			}
 
 		case "message_delta":
 			if delta, ok := event["delta"].(map[string]interface{}); ok {
 				if stopReason, ok := delta["stop_reason"].(string); ok {
-					log.Printf("[INFO] Stream ended - Stop reason: %s, Total text length: %d",
-						stopReason, currentText.Len())
+					log.Printf("[INFO] Stream ended - Stop reason: %s, Text: %d chars, Tools: %d",
+						stopReason, currentText.Len(), len(currentTools))
 
-					// 发送最终块
+					// 构建最终块
+					finishReason := convertStopReason(stopReason)
+					choices := []map[string]interface{}{
+						{
+							"index":         0,
+							"delta":         map[string]interface{}{},
+							"finish_reason": finishReason,
+						},
+					}
+
+					// 如果有工具调用，添加到 delta
+					if len(currentTools) > 0 {
+						choices[0]["delta"] = map[string]interface{}{
+							"tool_calls": currentTools,
+						}
+						choices[0]["finish_reason"] = "tool_calls"
+					}
+
 					chunk := map[string]interface{}{
 						"id":      messageID,
 						"object":  "chat.completion.chunk",
 						"created": getCurrentTimestamp(),
 						"model":   model,
-						"choices": []map[string]interface{}{
-							{
-								"index":         0,
-								"delta":         map[string]interface{}{},
-								"finish_reason": convertStopReason(stopReason),
-							},
-						},
+						"choices": choices,
 					}
 
 					if usage != nil {
