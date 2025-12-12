@@ -183,14 +183,10 @@ func (h *ProxyHandler) handleStreamResponse(c *gin.Context, httpResp *http.Respo
 
 	scanner := bufio.NewScanner(httpResp.Body)
 	var (
-		messageID      string
-		currentText    strings.Builder
-		currentTools   []ToolCall
-		currentToolID  string
-		currentToolName string
-		currentToolArgs strings.Builder
-		usage          *AnthropicUsage
-		eventCount     int
+		messageID   string
+		usage       *AnthropicUsage
+		eventCount  int
+		toolIndex   int
 	)
 
 	for scanner.Scan() {
@@ -217,7 +213,9 @@ func (h *ProxyHandler) handleStreamResponse(c *gin.Context, httpResp *http.Respo
 		}
 
 		eventType, _ := event["type"].(string)
-		log.Printf("[DEBUG] Event type: %s", eventType)
+		if eventCount <= 20 {
+			log.Printf("[DEBUG] Event type: %s", eventType)
+		}
 
 		switch eventType {
 		case "message_start":
@@ -229,6 +227,25 @@ func (h *ProxyHandler) handleStreamResponse(c *gin.Context, httpResp *http.Respo
 					log.Printf("[INFO] Initial usage: input=%d, cache_creation=%d, cache_read=%d",
 						usage.InputTokens, usage.CacheCreationInputTokens, usage.CacheReadInputTokens)
 				}
+
+				// 发送初始块（带 role）
+				chunk := map[string]interface{}{
+					"id":      messageID,
+					"object":  "chat.completion.chunk",
+					"created": getCurrentTimestamp(),
+					"model":   model,
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"delta": map[string]interface{}{
+								"role":    "assistant",
+								"content": "",
+							},
+							"finish_reason": nil,
+						},
+					},
+				}
+				sendSSE(c, chunk, flusher)
 			}
 
 		case "content_block_start":
@@ -236,10 +253,37 @@ func (h *ProxyHandler) handleStreamResponse(c *gin.Context, httpResp *http.Respo
 			if block, ok := event["content_block"].(map[string]interface{}); ok {
 				blockType, _ := block["type"].(string)
 				if blockType == "tool_use" {
-					currentToolID, _ = block["id"].(string)
-					currentToolName, _ = block["name"].(string)
-					currentToolArgs.Reset()
-					log.Printf("[INFO] Tool use started - ID: %s, Name: %s", currentToolID, currentToolName)
+					toolID, _ := block["id"].(string)
+					toolName, _ := block["name"].(string)
+					log.Printf("[INFO] Tool use started - ID: %s, Name: %s, Index: %d", toolID, toolName, toolIndex)
+
+					// 发送工具调用开始事件
+					chunk := map[string]interface{}{
+						"id":      messageID,
+						"object":  "chat.completion.chunk",
+						"created": getCurrentTimestamp(),
+						"model":   model,
+						"choices": []map[string]interface{}{
+							{
+								"index": 0,
+								"delta": map[string]interface{}{
+									"tool_calls": []map[string]interface{}{
+										{
+											"index": toolIndex,
+											"id":    toolID,
+											"type":  "function",
+											"function": map[string]string{
+												"name":      toolName,
+												"arguments": "",
+											},
+										},
+									},
+								},
+								"finish_reason": nil,
+							},
+						},
+					}
+					sendSSE(c, chunk, flusher)
 				}
 			}
 
@@ -250,9 +294,6 @@ func (h *ProxyHandler) handleStreamResponse(c *gin.Context, httpResp *http.Respo
 				if deltaType == "text_delta" {
 					// 处理文本内容
 					if text, ok := delta["text"].(string); ok {
-						currentText.WriteString(text)
-
-						// 发送 OpenAI 流式事件
 						chunk := map[string]interface{}{
 							"id":      messageID,
 							"object":  "chat.completion.chunk",
@@ -261,77 +302,70 @@ func (h *ProxyHandler) handleStreamResponse(c *gin.Context, httpResp *http.Respo
 							"choices": []map[string]interface{}{
 								{
 									"index": 0,
-									"delta": map[string]string{
+									"delta": map[string]interface{}{
 										"content": text,
 									},
 									"finish_reason": nil,
 								},
 							},
 						}
-
 						sendSSE(c, chunk, flusher)
 					}
 				} else if deltaType == "input_json_delta" {
-					// 处理工具参数
+					// 处理工具参数增量
 					if partialJSON, ok := delta["partial_json"].(string); ok {
-						currentToolArgs.WriteString(partialJSON)
+						chunk := map[string]interface{}{
+							"id":      messageID,
+							"object":  "chat.completion.chunk",
+							"created": getCurrentTimestamp(),
+							"model":   model,
+							"choices": []map[string]interface{}{
+								{
+									"index": 0,
+									"delta": map[string]interface{}{
+										"tool_calls": []map[string]interface{}{
+											{
+												"index": toolIndex,
+												"function": map[string]string{
+													"arguments": partialJSON,
+												},
+											},
+										},
+									},
+									"finish_reason": nil,
+								},
+							},
+						}
+						sendSSE(c, chunk, flusher)
 					}
 				}
 			}
 
 		case "content_block_stop":
-			// 工具块结束，添加到工具列表
-			if currentToolID != "" {
-				currentTools = append(currentTools, ToolCall{
-					ID:   currentToolID,
-					Type: "function",
-					Function: struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					}{
-						Name:      currentToolName,
-						Arguments: currentToolArgs.String(),
-					},
-				})
-				log.Printf("[INFO] Tool use completed - ID: %s, Name: %s, Args length: %d",
-					currentToolID, currentToolName, currentToolArgs.Len())
-
-				// 重置
-				currentToolID = ""
-				currentToolName = ""
-				currentToolArgs.Reset()
+			// 工具块结束
+			if eventCount <= 20 {
+				log.Printf("[DEBUG] Content block %d stopped", toolIndex)
 			}
+			toolIndex++
 
 		case "message_delta":
 			if delta, ok := event["delta"].(map[string]interface{}); ok {
 				if stopReason, ok := delta["stop_reason"].(string); ok {
-					log.Printf("[INFO] Stream ended - Stop reason: %s, Text: %d chars, Tools: %d",
-						stopReason, currentText.Len(), len(currentTools))
+					log.Printf("[INFO] Stream ended - Stop reason: %s", stopReason)
 
-					// 构建最终块
-					finishReason := convertStopReason(stopReason)
-					choices := []map[string]interface{}{
-						{
-							"index":         0,
-							"delta":         map[string]interface{}{},
-							"finish_reason": finishReason,
-						},
-					}
-
-					// 如果有工具调用，添加到 delta
-					if len(currentTools) > 0 {
-						choices[0]["delta"] = map[string]interface{}{
-							"tool_calls": currentTools,
-						}
-						choices[0]["finish_reason"] = "tool_calls"
-					}
-
+					// 发送最终块
 					chunk := map[string]interface{}{
 						"id":      messageID,
 						"object":  "chat.completion.chunk",
 						"created": getCurrentTimestamp(),
 						"model":   model,
-						"choices": choices,
+						"choices": []map[string]interface{}{
+							{
+								"index":         0,
+								"delta":         map[string]interface{}{},
+								"finish_reason": convertStopReason(stopReason),
+							},
+						},
 					}
 
 					if usage != nil {
