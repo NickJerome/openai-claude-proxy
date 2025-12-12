@@ -53,15 +53,44 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## 环境变量
 
-创建 `.env` 文件：
+创建 `.env` 文件或在 `docker run` 时指定：
 
 ```bash
 # 可选：自定义 Anthropic API 端点
 ANTHROPIC_BASE_URL=https://api.anthropic.com
+# 或使用第三方端点
+# ANTHROPIC_BASE_URL=https://www.openclaudecode.cn
 
 # 可选：自定义端口
 PORT=8080
+
+# 可选：模型名称映射（默认不映射，直接透传）
+# 格式: "源模型:目标模型,源模型2:目标模型2"
+MODEL_MAPPING=gpt-4:claude-opus-4-5-20251101,gpt-3.5-turbo:claude-3-5-haiku-20241022
 ```
+
+### 使用示例
+
+**使用 OCC 第三方端点 + 模型映射**：
+
+```bash
+docker run -d -p 8080:8080 \
+  -e ANTHROPIC_BASE_URL=https://www.openclaudecode.cn \
+  -e MODEL_MAPPING=gpt-4:claude-opus-4-5-20251101 \
+  ghcr.io/nickjerome/openai-claude-proxy:latest
+```
+
+这样客户端请求 `gpt-4` 会自动映射到 `claude-opus-4-5-20251101`。
+
+**不映射，直接透传**（默认）：
+
+```bash
+docker run -d -p 8080:8080 \
+  -e ANTHROPIC_BASE_URL=https://www.openclaudecode.cn \
+  ghcr.io/nickjerome/openai-claude-proxy:latest
+```
+
+客户端请求什么模型就使用什么模型。
 
 ## 本地开发
 

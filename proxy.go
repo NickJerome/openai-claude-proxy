@@ -14,14 +14,16 @@ import (
 
 type ProxyHandler struct {
 	anthropicURL string
+	modelMapping map[string]string
 }
 
-func NewProxyHandler(baseURL string) *ProxyHandler {
+func NewProxyHandler(baseURL string, modelMapping map[string]string) *ProxyHandler {
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
 	return &ProxyHandler{
 		anthropicURL: baseURL,
+		modelMapping: modelMapping,
 	}
 }
 
@@ -45,6 +47,11 @@ func (h *ProxyHandler) HandleChatCompletions(c *gin.Context) {
 	if err := c.ShouldBindJSON(&openaiReq); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// 应用模型映射
+	if mappedModel, ok := h.modelMapping[openaiReq.Model]; ok {
+		openaiReq.Model = mappedModel
 	}
 
 	// 转换为 Anthropic 格式
