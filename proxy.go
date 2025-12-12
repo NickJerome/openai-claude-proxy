@@ -126,10 +126,9 @@ func (h *ProxyHandler) handleStreamResponse(c *gin.Context, httpResp *http.Respo
 
 	scanner := bufio.NewScanner(httpResp.Body)
 	var (
-		messageID    string
-		currentText  strings.Builder
-		currentTools []ToolCall
-		usage        *AnthropicUsage
+		messageID   string
+		currentText strings.Builder
+		usage       *AnthropicUsage
 	)
 
 	for scanner.Scan() {
