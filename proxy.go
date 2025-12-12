@@ -14,17 +14,19 @@ import (
 )
 
 type ProxyHandler struct {
-	anthropicURL string
-	modelMapping map[string]string
+	anthropicURL      string
+	modelMapping      map[string]string
+	maxTokensMapping  map[string]int
 }
 
-func NewProxyHandler(baseURL string, modelMapping map[string]string) *ProxyHandler {
+func NewProxyHandler(baseURL string, modelMapping map[string]string, maxTokensMapping map[string]int) *ProxyHandler {
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
 	return &ProxyHandler{
-		anthropicURL: baseURL,
-		modelMapping: modelMapping,
+		anthropicURL:     baseURL,
+		modelMapping:     modelMapping,
+		maxTokensMapping: maxTokensMapping,
 	}
 }
 
@@ -66,7 +68,7 @@ func (h *ProxyHandler) HandleChatCompletions(c *gin.Context) {
 	}
 
 	// 转换为 Anthropic 格式
-	anthropicReq, err := ConvertOpenAIToAnthropic(openaiReq)
+	anthropicReq, err := ConvertOpenAIToAnthropic(openaiReq, h.maxTokensMapping)
 	if err != nil {
 		log.Printf("[ERROR] Conversion failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

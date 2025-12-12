@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"strings"
 )
 
 // ConvertOpenAIToAnthropic 完全参考 new-api/relay/channel/claude/relay-claude.go:75-482
-func ConvertOpenAIToAnthropic(req OpenAIRequest) (*AnthropicRequest, error) {
+func ConvertOpenAIToAnthropic(req OpenAIRequest, maxTokensMapping map[string]int) (*AnthropicRequest, error) {
 	// 转换工具定义
 	claudeTools := make([]interface{}, 0, len(req.Tools))
 	for _, tool := range req.Tools {
@@ -48,7 +50,8 @@ func ConvertOpenAIToAnthropic(req OpenAIRequest) (*AnthropicRequest, error) {
 	}
 
 	if anthReq.MaxTokens == 0 {
-		anthReq.MaxTokens = 4096
+		// 根据模型选择默认的 max_tokens
+		anthReq.MaxTokens = getDefaultMaxTokens(req.Model, maxTokensMapping)
 	}
 
 	// 格式化消息：合并连续相同角色的消息
@@ -407,3 +410,35 @@ func convertStopReason(reason string) string {
 func getCurrentTimestamp() int64 {
 	return int64(1765521600)
 }
+
+// getDefaultMaxTokens 根据模型名称返回默认的 max_tokens
+func getDefaultMaxTokens(model string, maxTokensMapping map[string]int) int {
+	// 1. 首先检查用户配置的 mapping
+	if maxTokensMapping != nil {
+		if tokens, ok := maxTokensMapping[model]; ok {
+			return tokens
+		}
+	}
+
+	// 2. 然后检查环境变量
+	if maxTokensEnv := os.Getenv("MAX_TOKENS"); maxTokensEnv != "" {
+		if tokens, err := strconv.Atoi(maxTokensEnv); err == nil && tokens > 0 {
+			return tokens
+		}
+	}
+
+	// 3. 最后根据模型名称选择合适的默认值
+	switch {
+	case strings.Contains(model, "opus-4"):
+		return 16384 // Claude Opus 4.x 支持更大的输出
+	case strings.Contains(model, "opus"):
+		return 8192 // Claude 3 Opus
+	case strings.Contains(model, "sonnet"):
+		return 8192 // Claude 3.5 Sonnet
+	case strings.Contains(model, "haiku"):
+		return 4096 // Claude Haiku (较小模型)
+	default:
+		return 8192 // 默认使用 8192，避免 4096 太小导致截断
+	}
+}
+

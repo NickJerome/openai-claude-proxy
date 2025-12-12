@@ -67,20 +67,39 @@ PORT=8080
 # 可选：模型名称映射（默认不映射，直接透传）
 # 格式: "源模型:目标模型,源模型2:目标模型2"
 MODEL_MAPPING=gpt-4:claude-opus-4-5-20251101,gpt-3.5-turbo:claude-3-5-haiku-20241022
+
+# 可选：Max Tokens 映射（为每个模型单独设置 max_tokens）
+# 格式: "模型1:tokens1,模型2:tokens2"
+# 优先级: MAX_TOKENS_MAPPING > MAX_TOKENS > 内置默认值
+MAX_TOKENS_MAPPING=claude-opus-4-5-20251101:16384,claude-3-5-sonnet-20241022:8192,claude-3-haiku-20240307:4096
+
+# 可选：全局默认 Max Tokens（当请求未指定且 MAX_TOKENS_MAPPING 未匹配时使用）
+# 默认值: 根据模型自动选择（opus-4: 16384, opus/sonnet: 8192, haiku: 4096, 其他: 8192）
+MAX_TOKENS=8192
 ```
 
 ### 使用示例
 
-**使用 OCC 第三方端点 + 模型映射**：
+**使用 OCC 第三方端点 + 模型映射 + Max Tokens 配置**：
 
 ```bash
 docker run -d -p 8080:8080 \
   -e ANTHROPIC_BASE_URL=https://www.openclaudecode.cn \
   -e MODEL_MAPPING=gpt-4:claude-opus-4-5-20251101 \
+  -e MAX_TOKENS_MAPPING=claude-opus-4-5-20251101:16384 \
   ghcr.io/nickjerome/openai-claude-proxy:latest
 ```
 
-这样客户端请求 `gpt-4` 会自动映射到 `claude-opus-4-5-20251101`。
+这样客户端请求 `gpt-4` 会自动映射到 `claude-opus-4-5-20251101`，并使用 16384 的 max_tokens。
+
+**使用全局 MAX_TOKENS**：
+
+```bash
+docker run -d -p 8080:8080 \
+  -e ANTHROPIC_BASE_URL=https://www.openclaudecode.cn \
+  -e MAX_TOKENS=16384 \
+  ghcr.io/nickjerome/openai-claude-proxy:latest
+```
 
 **不映射，直接透传**（默认）：
 
