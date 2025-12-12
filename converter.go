@@ -204,17 +204,24 @@ func ConvertOpenAIToAnthropic(req OpenAIRequest) (*AnthropicRequest, error) {
 			if len(message.ToolCalls) > 0 {
 				for _, toolCall := range message.ToolCalls {
 					var input map[string]interface{}
-					if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
-						log.Printf("[WARN] Failed to parse tool call arguments: %v", err)
-						continue
+					if toolCall.Function.Arguments != "" {
+						if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
+							log.Printf("[WARN] Failed to parse tool call arguments: %v, using empty object", err)
+							input = make(map[string]interface{}) // 解析失败使用空对象
+						}
+					} else {
+						// Arguments 为空，使用空对象
+						input = make(map[string]interface{})
 					}
 
 					anthContents = append(anthContents, AnthropicContent{
 						Type:  "tool_use",
 						ID:    toolCall.ID,
 						Name:  toolCall.Function.Name,
-						Input: input,
+						Input: input, // 确保 input 始终非 nil
 					})
+					log.Printf("[DEBUG] Converted tool_call: ID=%s, Name=%s, Args=%s",
+						toolCall.ID, toolCall.Function.Name, toolCall.Function.Arguments)
 				}
 			}
 
