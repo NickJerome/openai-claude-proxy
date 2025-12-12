@@ -2,83 +2,219 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"log"
 	"strings"
 )
 
-// ConvertOpenAIToAnthropic 将 OpenAI 请求转换为 Anthropic 请求
+// ConvertOpenAIToAnthropic 完全参考 new-api/relay/channel/claude/relay-claude.go:75-482
 func ConvertOpenAIToAnthropic(req OpenAIRequest) (*AnthropicRequest, error) {
+	// 转换工具定义
+	claudeTools := make([]interface{}, 0, len(req.Tools))
+	for _, tool := range req.Tools {
+		if params, ok := tool.Function.Parameters.(map[string]interface{}); ok {
+			claudeTool := AnthropicTool{
+				Name:        tool.Function.Name,
+				Description: tool.Function.Description,
+				InputSchema: make(map[string]interface{}),
+			}
+
+			if params["type"] != nil {
+				if typeStr, ok := params["type"].(string); ok {
+					claudeTool.InputSchema["type"] = typeStr
+				}
+			}
+			claudeTool.InputSchema["properties"] = params["properties"]
+			claudeTool.InputSchema["required"] = params["required"]
+
+			// 复制其他字段
+			for key, val := range params {
+				if key != "type" && key != "properties" && key != "required" {
+					claudeTool.InputSchema[key] = val
+				}
+			}
+
+			claudeTools = append(claudeTools, claudeTool)
+		}
+	}
+
 	anthReq := &AnthropicRequest{
 		Model:       req.Model,
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
 		Stream:      req.Stream,
-		Messages:    make([]AnthropicMessage, 0),
-		System:      make([]AnthropicSystemBlock, 0),
+		Tools:       claudeTools,
 	}
 
-	// 默认 max_tokens
 	if anthReq.MaxTokens == 0 {
 		anthReq.MaxTokens = 4096
 	}
 
+	// 格式化消息：合并连续相同角色的消息
+	formatMessages := make([]OpenAIMessage, 0)
+	var lastMessage OpenAIMessage
+	lastMessage.Role = "tool"
+
+	for _, message := range req.Messages {
+		if message.Role == "" {
+			message.Role = "user"
+		}
+
+		// 合并连续相同角色的消息（tool 除外）
+		if lastMessage.Role == message.Role && lastMessage.Role != "tool" {
+			if isStringContent(lastMessage.Content) && isStringContent(message.Content) {
+				// 合并文本内容
+				combined := fmt.Sprintf("%s %s", getStringContent(lastMessage.Content), getStringContent(message.Content))
+				message.Content = strings.Trim(combined, "\"")
+				// 删除上一条消息
+				formatMessages = formatMessages[:len(formatMessages)-1]
+			}
+		}
+
+		// 如果 content 是 nil，设置为占位符
+		if message.Content == nil {
+			message.Content = "..."
+		}
+
+		formatMessages = append(formatMessages, message)
+		lastMessage = message
+	}
+
 	// 转换消息
-	for _, msg := range req.Messages {
+	claudeMessages := make([]AnthropicMessage, 0)
+	systemMessages := make([]AnthropicSystemBlock, 0)
+	isFirstMessage := true
+
+	for _, message := range formatMessages {
 		// 提取 system 消息
-		if msg.Role == "system" {
-			systemText := extractTextContent(msg.Content)
-			if systemText != "" {
-				anthReq.System = append(anthReq.System, AnthropicSystemBlock{
+		if message.Role == "system" {
+			if isStringContent(message.Content) {
+				systemMessages = append(systemMessages, AnthropicSystemBlock{
 					Type: "text",
-					Text: systemText,
+					Text: getStringContent(message.Content),
 				})
+			} else if contentArray, ok := message.Content.([]interface{}); ok {
+				for _, item := range contentArray {
+					if contentMap, ok := item.(map[string]interface{}); ok {
+						if contentType, _ := contentMap["type"].(string); contentType == "text" {
+							if text, ok := contentMap["text"].(string); ok {
+								systemMessages = append(systemMessages, AnthropicSystemBlock{
+									Type: "text",
+									Text: text,
+								})
+							}
+						}
+					}
+				}
 			}
 			continue
 		}
 
-		anthMsg := AnthropicMessage{
-			Role: msg.Role,
+		// 确保第一条消息是 user
+		if isFirstMessage {
+			isFirstMessage = false
+			if message.Role != "user" {
+				log.Println("[INFO] First message is not user, adding placeholder user message")
+				claudeMessages = append(claudeMessages, AnthropicMessage{
+					Role: "user",
+					Content: []AnthropicContent{
+						{Type: "text", Text: stringPtr("...")},
+					},
+				})
+			}
 		}
 
-		// 转换 content
-		switch content := msg.Content.(type) {
-		case string:
-			// 字符串类型，直接使用
-			if content != "" {
-				anthMsg.Content = content
+		anthMsg := AnthropicMessage{
+			Role: message.Role,
+		}
+
+		// 处理 tool 结果
+		if message.Role == "tool" && message.ToolCallID != "" {
+			toolResult := AnthropicContent{
+				Type:      "tool_result",
+				ToolUseID: message.ToolCallID,
+				Content:   message.Content,
 			}
-		case []interface{}:
-			// 数组类型，转换每个块
-			anthContents := make([]AnthropicContent, 0)
-			for _, item := range content {
-				contentMap, ok := item.(map[string]interface{})
-				if !ok {
-					continue
+
+			// 尝试合并到上一条 user 消息
+			if len(claudeMessages) > 0 && claudeMessages[len(claudeMessages)-1].Role == "user" {
+				lastMsg := &claudeMessages[len(claudeMessages)-1]
+
+				// 确保 content 是数组格式
+				if strContent, ok := lastMsg.Content.(string); ok {
+					lastMsg.Content = []AnthropicContent{
+						{Type: "text", Text: stringPtr(strContent)},
+					}
 				}
 
-				contentType, _ := contentMap["type"].(string)
+				if contents, ok := lastMsg.Content.([]AnthropicContent); ok {
+					lastMsg.Content = append(contents, toolResult)
+					log.Printf("[INFO] Merged tool_result into previous user message")
+					continue
+				}
+			} else {
+				// 创建新的 user 消息
+				anthMsg.Role = "user"
+				anthMsg.Content = []AnthropicContent{toolResult}
+			}
+		} else if isStringContent(message.Content) && len(message.ToolCalls) == 0 {
+			// 纯文本消息
+			anthMsg.Content = getStringContent(message.Content)
+		} else {
+			// 复杂内容或有 tool_calls
+			anthContents := make([]AnthropicContent, 0)
 
-				if contentType == "text" {
-					text, _ := contentMap["text"].(string)
-					if text == "" {
-						continue // 跳过空文本块
+			// 转换 content
+			if contentArray, ok := message.Content.([]interface{}); ok {
+				for _, item := range contentArray {
+					contentMap, ok := item.(map[string]interface{})
+					if !ok {
+						continue
 					}
-					anthContents = append(anthContents, AnthropicContent{
-						Type: "text",
-						Text: stringPtr(text),
-					})
-				} else if contentType == "image_url" {
-					// 处理图片
-					if imageURL, ok := contentMap["image_url"].(map[string]interface{}); ok {
-						url, _ := imageURL["url"].(string)
+
+					contentType, _ := contentMap["type"].(string)
+
+					if contentType == "text" {
+						text, _ := contentMap["text"].(string)
+						if text == "" {
+							log.Println("[DEBUG] Skipping empty text block")
+							continue // 跳过空文本块
+						}
 						anthContents = append(anthContents, AnthropicContent{
-							Type: "image",
-							Source: &ImageSource{
-								Type: "url",
-								URL:  url,
-							},
+							Type: "text",
+							Text: stringPtr(text),
 						})
+					} else if contentType == "image_url" {
+						if imageURL, ok := contentMap["image_url"].(map[string]interface{}); ok {
+							url, _ := imageURL["url"].(string)
+							anthContents = append(anthContents, AnthropicContent{
+								Type: "image",
+								Source: &ImageSource{
+									Type: "url",
+									URL:  url,
+								},
+							})
+						}
 					}
+				}
+			}
+
+			// 添加 tool_calls
+			if len(message.ToolCalls) > 0 {
+				for _, toolCall := range message.ToolCalls {
+					var input map[string]interface{}
+					if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
+						log.Printf("[WARN] Failed to parse tool call arguments: %v", err)
+						continue
+					}
+
+					anthContents = append(anthContents, AnthropicContent{
+						Type:  "tool_use",
+						ID:    toolCall.ID,
+						Name:  toolCall.Function.Name,
+						Input: input,
+					})
 				}
 			}
 
@@ -87,114 +223,30 @@ func ConvertOpenAIToAnthropic(req OpenAIRequest) (*AnthropicRequest, error) {
 			}
 		}
 
-		// 转换 tool_calls
-		if len(msg.ToolCalls) > 0 {
-			// 如果有 tool_calls，需要转换为数组格式
-			anthContents := make([]AnthropicContent, 0)
-
-			// 如果之前已经有 content，先添加
-			if str, ok := anthMsg.Content.(string); ok && str != "" {
-				anthContents = append(anthContents, AnthropicContent{
-					Type: "text",
-					Text: stringPtr(str),
-				})
-			} else if contents, ok := anthMsg.Content.([]AnthropicContent); ok {
-				anthContents = append(anthContents, contents...)
-			}
-
-			// 添加 tool_use 块
-			for _, toolCall := range msg.ToolCalls {
-				var input map[string]interface{}
-				if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
-					continue
-				}
-
-				anthContents = append(anthContents, AnthropicContent{
-					Type:  "tool_use",
-					ID:    toolCall.ID,
-					Name:  toolCall.Function.Name,
-					Input: input,
-				})
-			}
-
-			anthMsg.Content = anthContents
-		}
-
-		// 处理 tool 结果（role == "tool"）
-		if msg.Role == "tool" && msg.ToolCallID != "" {
-			// 转换为 user 消息，包含 tool_result
-			toolResult := AnthropicContent{
-				Type:      "tool_result",
-				ToolUseID: msg.ToolCallID,
-			}
-
-			resultText := extractTextContent(msg.Content)
-			if resultText != "" {
-				toolResult.Text = stringPtr(resultText)
-			}
-
-			anthMsg.Role = "user"
-			anthMsg.Content = []AnthropicContent{toolResult}
-		}
-
-		anthReq.Messages = append(anthReq.Messages, anthMsg)
+		claudeMessages = append(claudeMessages, anthMsg)
 	}
 
-	// 合并连续的相同角色消息
-	anthReq.Messages = mergeConsecutiveMessages(anthReq.Messages)
-
-	// 转换工具定义
-	if len(req.Tools) > 0 {
-		anthReq.Tools = make([]interface{}, 0, len(req.Tools))
-		for _, tool := range req.Tools {
-			anthTool := AnthropicTool{
-				Name:        tool.Function.Name,
-				Description: tool.Function.Description,
-			}
-
-			// 转换 parameters 为 input_schema
-			if params, ok := tool.Function.Parameters.(map[string]interface{}); ok {
-				anthTool.InputSchema = params
-			}
-
-			anthReq.Tools = append(anthReq.Tools, anthTool)
-		}
-	}
-
-	// 转换 tool_choice
-	if req.ToolChoice != nil {
-		anthReq.ToolChoice = convertToolChoice(req.ToolChoice)
-	}
-
-	// 自动添加 cache_control
-	addCacheControl(anthReq)
-
-	return anthReq, nil
-}
-
-// addCacheControl 自动在合适的位置添加缓存控制
-func addCacheControl(req *AnthropicRequest) {
-	// 1. 在 system 的最后一个块添加 cache_control
-	if len(req.System) > 0 {
-		req.System[len(req.System)-1].CacheControl = &CacheControl{
+	// 添加 system 消息并设置 cache_control
+	if len(systemMessages) > 0 {
+		systemMessages[len(systemMessages)-1].CacheControl = &CacheControl{
 			Type: "ephemeral",
 			TTL:  "1h",
 		}
+		log.Printf("[INFO] Added cache_control to system (1h TTL)")
+		anthReq.System = systemMessages
 	}
 
-	// 2. 在倒数第2条 assistant 消息添加（如果存在且够长）
-	if len(req.Messages) >= 2 {
-		secondLast := &req.Messages[len(req.Messages)-2]
+	// 在倒数第2条 assistant 消息添加 cache_control
+	if len(claudeMessages) >= 2 {
+		secondLast := &claudeMessages[len(claudeMessages)-2]
 		if secondLast.Role == "assistant" {
 			addCacheControlToMessage(secondLast)
+			log.Printf("[INFO] Added cache_control to second-to-last assistant message (1h TTL)")
 		}
 	}
 
-	// 3. 在最后一条消息添加
-	if len(req.Messages) > 0 {
-		lastMsg := &req.Messages[len(req.Messages)-1]
-		addCacheControlToMessage(lastMsg)
-	}
+	anthReq.Messages = claudeMessages
+	return anthReq, nil
 }
 
 func addCacheControlToMessage(msg *AnthropicMessage) {
@@ -208,7 +260,6 @@ func addCacheControlToMessage(msg *AnthropicMessage) {
 			msg.Content = content
 		}
 	case string:
-		// 转换字符串为数组格式
 		if content != "" {
 			msg.Content = []AnthropicContent{
 				{
@@ -221,45 +272,16 @@ func addCacheControlToMessage(msg *AnthropicMessage) {
 	}
 }
 
-// mergeConsecutiveMessages 合并连续的相同角色消息
-func mergeConsecutiveMessages(messages []AnthropicMessage) []AnthropicMessage {
-	if len(messages) <= 1 {
-		return messages
-	}
-
-	merged := make([]AnthropicMessage, 0)
-	current := messages[0]
-
-	for i := 1; i < len(messages); i++ {
-		next := messages[i]
-
-		if current.Role == next.Role && current.Role != "tool" {
-			// 合并内容
-			currentContents := toContentArray(current.Content)
-			nextContents := toContentArray(next.Content)
-			current.Content = append(currentContents, nextContents...)
-		} else {
-			merged = append(merged, current)
-			current = next
-		}
-	}
-
-	merged = append(merged, current)
-	return merged
+func isStringContent(content interface{}) bool {
+	_, ok := content.(string)
+	return ok
 }
 
-func toContentArray(content interface{}) []AnthropicContent {
-	switch c := content.(type) {
-	case []AnthropicContent:
-		return c
-	case string:
-		if c != "" {
-			return []AnthropicContent{{Type: "text", Text: stringPtr(c)}}
-		}
-		return []AnthropicContent{}
-	default:
-		return []AnthropicContent{}
+func getStringContent(content interface{}) string {
+	if str, ok := content.(string); ok {
+		return str
 	}
+	return ""
 }
 
 func convertToolChoice(choice interface{}) interface{} {
@@ -269,35 +291,14 @@ func convertToolChoice(choice interface{}) interface{} {
 
 	switch v := choice.(type) {
 	case string:
-		if v == "auto" || v == "required" {
+		if v == "auto" || v == "required" || v == "none" {
 			return map[string]string{"type": v}
-		}
-		if v == "none" {
-			return map[string]string{"type": "none"}
 		}
 	case map[string]interface{}:
 		return v
 	}
 
 	return nil
-}
-
-func extractTextContent(content interface{}) string {
-	switch c := content.(type) {
-	case string:
-		return c
-	case []interface{}:
-		var texts []string
-		for _, item := range c {
-			if m, ok := item.(map[string]interface{}); ok {
-				if t, ok := m["text"].(string); ok {
-					texts = append(texts, t)
-				}
-			}
-		}
-		return strings.Join(texts, "\n")
-	}
-	return ""
 }
 
 func stringPtr(s string) *string {
@@ -311,15 +312,6 @@ func ConvertAnthropicToOpenAI(anthResp AnthropicResponse) OpenAIResponse {
 		Object:  "chat.completion",
 		Created: getCurrentTimestamp(),
 		Model:   anthResp.Model,
-		Choices: make([]struct {
-			Index   int `json:"index"`
-			Message struct {
-				Role      string     `json:"role"`
-				Content   string     `json:"content,omitempty"`
-				ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-			} `json:"message"`
-			FinishReason string `json:"finish_reason"`
-		}, 1),
 		Usage: struct {
 			PromptTokens             int `json:"prompt_tokens"`
 			CompletionTokens         int `json:"completion_tokens"`
@@ -335,14 +327,28 @@ func ConvertAnthropicToOpenAI(anthResp AnthropicResponse) OpenAIResponse {
 		},
 	}
 
-	// 转换内容和工具调用
+	// 初始化 choices
+	resp.Choices = make([]struct {
+		Index   int `json:"index"`
+		Message struct {
+			Role      string     `json:"role"`
+			Content   string     `json:"content,omitempty"`
+			ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
+	}, 1)
+
+	// 转换内容
 	var textParts []string
 	var toolCalls []ToolCall
 
 	for _, content := range anthResp.Content {
-		if content.Type == "text" && content.Text != nil {
-			textParts = append(textParts, *content.Text)
-		} else if content.Type == "tool_use" {
+		switch content.Type {
+		case "text":
+			if content.Text != nil {
+				textParts = append(textParts, *content.Text)
+			}
+		case "tool_use":
 			argsBytes, _ := json.Marshal(content.Input)
 			toolCalls = append(toolCalls, ToolCall{
 				ID:   content.ID,
@@ -360,9 +366,9 @@ func ConvertAnthropicToOpenAI(anthResp AnthropicResponse) OpenAIResponse {
 
 	resp.Choices[0].Message.Role = anthResp.Role
 	resp.Choices[0].Message.Content = strings.Join(textParts, "")
+	resp.Choices[0].Message.ToolCalls = toolCalls
 
 	if len(toolCalls) > 0 {
-		resp.Choices[0].Message.ToolCalls = toolCalls
 		resp.Choices[0].FinishReason = "tool_calls"
 	} else {
 		resp.Choices[0].FinishReason = convertStopReason(anthResp.StopReason)
@@ -387,5 +393,5 @@ func convertStopReason(reason string) string {
 }
 
 func getCurrentTimestamp() int64 {
-	return int64(1765521600) // 简化实现，实际应该用 time.Now().Unix()
+	return int64(1765521600)
 }
