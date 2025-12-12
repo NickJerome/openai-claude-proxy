@@ -13,17 +13,15 @@ RUN go mod download
 COPY *.go ./
 
 # 构建
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o proxy .
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o proxy .
 
-# 运行阶段
-FROM alpine:latest
+# 运行阶段 - 使用 scratch 镜像避免 apk 问题
+FROM scratch
 
 WORKDIR /app
 
-# 更新 apk 并安装 CA 证书
-RUN apk update && \
-    apk add --no-cache ca-certificates && \
-    rm -rf /var/cache/apk/*
+# 复制 CA 证书（从 builder 阶段）
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 # 从构建阶段复制二进制文件
 COPY --from=builder /build/proxy .
