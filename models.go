@@ -64,15 +64,15 @@ type AnthropicMessage struct {
 }
 
 type AnthropicContent struct {
-	Type         string                 `json:"type"`
-	Text         *string                `json:"text,omitempty"`
-	ToolUseID    string                 `json:"tool_use_id,omitempty"`
-	Content      interface{}            `json:"content,omitempty"` // 用于 tool_result
-	ID           string                 `json:"id,omitempty"`
-	Name         string                 `json:"name,omitempty"`
-	Input        map[string]interface{} `json:"input,omitempty"`
-	CacheControl *CacheControl          `json:"cache_control,omitempty"`
-	Source       *ImageSource           `json:"source,omitempty"`
+	Type         string                  `json:"type"`
+	Text         *string                 `json:"text,omitempty"`
+	ToolUseID    string                  `json:"tool_use_id,omitempty"`
+	Content      interface{}             `json:"content,omitempty"` // 用于 tool_result
+	ID           string                  `json:"id,omitempty"`
+	Name         string                  `json:"name,omitempty"`
+	Input        *map[string]interface{} `json:"input,omitempty"` // 使用指针，tool_use 时设置为非 nil
+	CacheControl *CacheControl           `json:"cache_control,omitempty"`
+	Source       *ImageSource            `json:"source,omitempty"`
 }
 
 type AnthropicSystemBlock struct {

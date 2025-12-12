@@ -203,31 +203,26 @@ func ConvertOpenAIToAnthropic(req OpenAIRequest) (*AnthropicRequest, error) {
 			// 添加 tool_calls（不能跳过，否则后续的 tool_result 会找不到对应的 tool_use）
 			if len(message.ToolCalls) > 0 {
 				for _, toolCall := range message.ToolCalls {
-					var input map[string]interface{}
+					input := make(map[string]interface{})
 
-					if toolCall.Function.Arguments == "" || toolCall.Function.Arguments == "{}" {
-						// Arguments 为空，使用空对象（必须保留 tool_use 以便 tool_result 匹配）
-						input = make(map[string]interface{})
-						log.Printf("[WARN] Tool_call has empty arguments, using empty object: ID=%s, Name=%s",
-							toolCall.ID, toolCall.Function.Name)
-					} else {
+					if toolCall.Function.Arguments != "" && toolCall.Function.Arguments != "{}" {
 						// 解析 Arguments
 						if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
 							log.Printf("[ERROR] Failed to parse tool call arguments: ID=%s, Name=%s, Error=%v",
 								toolCall.ID, toolCall.Function.Name, err)
-							// 解析失败也使用空对象
-							input = make(map[string]interface{})
+							// 解析失败使用空对象
 						}
 					}
 
+					// 使用指针，确保空对象也能被序列化
 					anthContents = append(anthContents, AnthropicContent{
 						Type:  "tool_use",
 						ID:    toolCall.ID,
 						Name:  toolCall.Function.Name,
-						Input: input,
+						Input: &input, // 指针，即使是空对象也会序列化为 {}
 					})
-					log.Printf("[DEBUG] Converted tool_call: ID=%s, Name=%s, Input=%v",
-						toolCall.ID, toolCall.Function.Name, input)
+					log.Printf("[DEBUG] Converted tool_call: ID=%s, Name=%s, InputLen=%d",
+						toolCall.ID, toolCall.Function.Name, len(input))
 				}
 			}
 
