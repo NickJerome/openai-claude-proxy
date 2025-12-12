@@ -200,28 +200,24 @@ func ConvertOpenAIToAnthropic(req OpenAIRequest) (*AnthropicRequest, error) {
 				}
 			}
 
-			// 添加 tool_calls
+			// 添加 tool_calls（不能跳过，否则后续的 tool_result 会找不到对应的 tool_use）
 			if len(message.ToolCalls) > 0 {
 				for _, toolCall := range message.ToolCalls {
-					// 跳过 Arguments 为空的工具调用（Anthropic 会拒绝）
-					if toolCall.Function.Arguments == "" || toolCall.Function.Arguments == "{}" {
-						log.Printf("[WARN] Skipping tool_call with empty arguments: ID=%s, Name=%s",
-							toolCall.ID, toolCall.Function.Name)
-						continue
-					}
-
 					var input map[string]interface{}
-					if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
-						log.Printf("[WARN] Failed to parse tool call arguments, skipping: ID=%s, Name=%s, Error=%v",
-							toolCall.ID, toolCall.Function.Name, err)
-						continue // 解析失败跳过
-					}
 
-					// 确保 input 不为空对象
-					if len(input) == 0 {
-						log.Printf("[WARN] Skipping tool_call with empty input object: ID=%s, Name=%s",
+					if toolCall.Function.Arguments == "" || toolCall.Function.Arguments == "{}" {
+						// Arguments 为空，使用空对象（必须保留 tool_use 以便 tool_result 匹配）
+						input = make(map[string]interface{})
+						log.Printf("[WARN] Tool_call has empty arguments, using empty object: ID=%s, Name=%s",
 							toolCall.ID, toolCall.Function.Name)
-						continue
+					} else {
+						// 解析 Arguments
+						if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
+							log.Printf("[ERROR] Failed to parse tool call arguments: ID=%s, Name=%s, Error=%v",
+								toolCall.ID, toolCall.Function.Name, err)
+							// 解析失败也使用空对象
+							input = make(map[string]interface{})
+						}
 					}
 
 					anthContents = append(anthContents, AnthropicContent{
@@ -230,8 +226,8 @@ func ConvertOpenAIToAnthropic(req OpenAIRequest) (*AnthropicRequest, error) {
 						Name:  toolCall.Function.Name,
 						Input: input,
 					})
-					log.Printf("[DEBUG] Converted tool_call: ID=%s, Name=%s, Args=%s",
-						toolCall.ID, toolCall.Function.Name, toolCall.Function.Arguments)
+					log.Printf("[DEBUG] Converted tool_call: ID=%s, Name=%s, Input=%v",
+						toolCall.ID, toolCall.Function.Name, input)
 				}
 			}
 
