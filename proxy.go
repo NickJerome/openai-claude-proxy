@@ -199,11 +199,12 @@ func (h *ProxyHandler) handleStreamResponse(c *gin.Context, httpResp *http.Respo
 			log.Printf("[DEBUG] Stream line %d: %s", eventCount, line)
 		}
 
-		if !strings.HasPrefix(line, "data: ") {
+		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
 
-		data := strings.TrimPrefix(line, "data: ")
+		data := strings.TrimPrefix(line, "data:")
+		data = strings.TrimSpace(data) // 去除可能的前后空格
 		if data == "[DONE]" || data == "" {
 			continue
 		}
