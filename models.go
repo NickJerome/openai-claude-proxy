@@ -9,6 +9,7 @@ type OpenAIRequest struct {
 	Stream      bool            `json:"stream,omitempty"`
 	Tools       []OpenAITool    `json:"tools,omitempty"`
 	ToolChoice  interface{}     `json:"tool_choice,omitempty"`
+	User        string          `json:"user,omitempty"` // OpenAI 的 user 字段，用于生成 metadata.user_id
 }
 
 type OpenAIMessage struct {
@@ -56,6 +57,12 @@ type AnthropicRequest struct {
 	Stream        bool                    `json:"stream,omitempty"`
 	Tools         []interface{}           `json:"tools,omitempty"`
 	ToolChoice    interface{}             `json:"tool_choice,omitempty"`
+	Metadata      *Metadata               `json:"metadata,omitempty"` // Claude Code 需要的 metadata
+}
+
+// Metadata Claude Code 需要的元数据
+type Metadata struct {
+	UserID string `json:"user_id"`
 }
 
 type AnthropicMessage struct {

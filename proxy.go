@@ -68,7 +68,7 @@ func (h *ProxyHandler) HandleChatCompletions(c *gin.Context) {
 	}
 
 	// 转换为 Anthropic 格式
-	anthropicReq, err := ConvertOpenAIToAnthropic(openaiReq, h.maxTokensMapping)
+	anthropicReq, err := ConvertOpenAIToAnthropic(openaiReq, h.maxTokensMapping, apiKey)
 	if err != nil {
 		log.Printf("[ERROR] Conversion failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

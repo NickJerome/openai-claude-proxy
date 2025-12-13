@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,8 +10,32 @@ import (
 	"strings"
 )
 
+// generateStableUserID 基于 API Key 生成稳定的 user_id
+// 同一个 API Key 始终生成相同的 user_id，确保缓存可以命中
+func generateStableUserID(apiKey string, clientUser string) string {
+	// 确定种子：优先使用客户端传的 user，否则使用 API Key
+	seed := apiKey
+	if clientUser != "" {
+		seed = apiKey + "_" + clientUser
+	}
+
+	// 生成稳定的用户 hash
+	hash := sha256.Sum256([]byte(seed))
+
+	// 生成稳定的 session UUID（基于种子，每次相同输入产生相同输出）
+	sessionHash := sha256.Sum256([]byte(seed + "_session"))
+	sessionUUID := fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		sessionHash[0:4],
+		sessionHash[4:6],
+		sessionHash[6:8],
+		sessionHash[8:10],
+		sessionHash[10:16])
+
+	return fmt.Sprintf("user_%x_account__session_%s", hash, sessionUUID)
+}
+
 // ConvertOpenAIToAnthropic 完全参考 new-api/relay/channel/claude/relay-claude.go:75-482
-func ConvertOpenAIToAnthropic(req OpenAIRequest, maxTokensMapping map[string]int) (*AnthropicRequest, error) {
+func ConvertOpenAIToAnthropic(req OpenAIRequest, maxTokensMapping map[string]int, apiKey string) (*AnthropicRequest, error) {
 	// 转换工具定义
 	claudeTools := make([]interface{}, 0, len(req.Tools))
 	for _, tool := range req.Tools {
@@ -48,6 +73,14 @@ func ConvertOpenAIToAnthropic(req OpenAIRequest, maxTokensMapping map[string]int
 		Stream:      req.Stream,
 		Tools:       claudeTools,
 	}
+
+	// 生成稳定的 metadata.user_id（基于 API Key）
+	anthReq.Metadata = &Metadata{
+		UserID: generateStableUserID(apiKey, req.User),
+	}
+	log.Printf("[INFO] Generated stable user_id: %s...%s", 
+		anthReq.Metadata.UserID[:30], 
+		anthReq.Metadata.UserID[len(anthReq.Metadata.UserID)-20:])
 
 	if anthReq.MaxTokens == 0 {
 		// 根据模型选择默认的 max_tokens
