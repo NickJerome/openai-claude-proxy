@@ -8,10 +8,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // generateStableUserID 基于 API Key 生成稳定的 user_id
 // 同一个 API Key 始终生成相同的 user_id，确保缓存可以命中
+// 支持 SESSION_TTL_MINUTES 环境变量控制 session 轮换周期（默认 60 分钟）
 func generateStableUserID(apiKey string, clientUser string) string {
 	// 确定种子：优先使用客户端传的 user，否则使用 API Key
 	seed := apiKey
@@ -19,11 +21,24 @@ func generateStableUserID(apiKey string, clientUser string) string {
 		seed = apiKey + "_" + clientUser
 	}
 
-	// 生成稳定的用户 hash
+	// 获取 session TTL 配置（分钟），默认 60 分钟
+	sessionTTLMinutes := 60
+	if ttlStr := os.Getenv("SESSION_TTL_MINUTES"); ttlStr != "" {
+		if ttl, err := strconv.Atoi(ttlStr); err == nil && ttl > 0 {
+			sessionTTLMinutes = ttl
+		}
+	}
+
+	// 计算当前时间窗口（基于 TTL 分钟数）
+	// 例如：TTL=60，则每小时变化一次；TTL=120，则每两小时变化一次
+	timeWindow := time.Now().Unix() / int64(sessionTTLMinutes*60)
+	
+	// 生成稳定的用户 hash（不随时间变化，保持用户身份一致）
 	hash := sha256.Sum256([]byte(seed))
 
-	// 生成稳定的 session UUID（基于种子，每次相同输入产生相同输出）
-	sessionHash := sha256.Sum256([]byte(seed + "_session"))
+	// 生成会话 UUID（加入时间窗口，实现周期性轮换）
+	sessionSeed := fmt.Sprintf("%s_session_%d", seed, timeWindow)
+	sessionHash := sha256.Sum256([]byte(sessionSeed))
 	sessionUUID := fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		sessionHash[0:4],
 		sessionHash[4:6],
@@ -31,7 +46,12 @@ func generateStableUserID(apiKey string, clientUser string) string {
 		sessionHash[8:10],
 		sessionHash[10:16])
 
-	return fmt.Sprintf("user_%x_account__session_%s", hash, sessionUUID)
+	userID := fmt.Sprintf("user_%x_account__session_%s", hash, sessionUUID)
+	
+	log.Printf("[INFO] Session TTL: %d minutes, TimeWindow: %d, UserID: %s...%s", 
+		sessionTTLMinutes, timeWindow, userID[:40], userID[len(userID)-20:])
+	
+	return userID
 }
 
 // ConvertOpenAIToAnthropic 完全参考 new-api/relay/channel/claude/relay-claude.go:75-482
